@@ -1,0 +1,4 @@
+mujoco
+numpy
+opencv-contrib-python
+matplotlib
