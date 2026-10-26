@@ -1,4 +1,3 @@
-import argparse
 import time
  
 import numpy as np
@@ -7,6 +6,15 @@ import mujoco
 import mujoco.viewer
 import scipy.linalg
 import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
+
+from src.SensingNoiseCalibration import (
+    NoiseConfig,
+    SensorProcessor,
+    camera_intrinsics_from_fov,
+    pose_error_metrics,
+)
+from src.robustness import Disturbance
  
 # ---------------------------------------------------------------------------
 # Settings
@@ -21,15 +29,11 @@ T = 0.05                                   # control / EKF sample time (s)
 N_LIDAR = 72                               # LiDAR beams (one every 5 deg)
 CAM_W, CAM_H, CAM_FOVY = 640, 480, 60.0
  
-ap = argparse.ArgumentParser()
-ap.add_argument("--seed", type=int, default=None)
-ap.add_argument("--headless", action="store_true")
-ARGS = ap.parse_args()
-SEED = ARGS.seed if ARGS.seed is not None else np.random.randint(10000)
-rng = np.random.default_rng(SEED)
+SCENE_SEED = 41014
+rng = np.random.default_rng(SCENE_SEED)
  
 # ---------------------------------------------------------------------------
-# 1. MODEL: random world + robot (Robustness: obstacles and start pose change every run)
+# 1. MODEL: seeded random world + robot (start pose is perturbed per trial)
 # ---------------------------------------------------------------------------
 def random_obstacles(n=4):
     start = START_POSE[:2]
@@ -55,8 +59,9 @@ def marker_png():
 lidar_sites = "".join(f'<site name="l{k}" pos="0 0 .09" zaxis="{np.cos(2*np.pi*k/N_LIDAR):.4f} '
                       f'{np.sin(2*np.pi*k/N_LIDAR):.4f} 0"/>' for k in range(N_LIDAR))
 lidar_sensors = "".join(f'<rangefinder name="r{k}" site="l{k}" cutoff="3.5"/>' for k in range(N_LIDAR))
-obstacle_geoms = "".join(f'<geom type="cylinder" pos="{x:.2f} {y:.2f} .2" size=".18 .2" rgba=".8 .3 .3 1"/>'
-                         for x, y in OBSTACLES)
+obstacle_geoms = "".join(f'<geom name="obstacle{k}" type="cylinder" pos="{x:.2f} {y:.2f} .2" '
+                         f'size=".18 .2" rgba=".8 .3 .3 1"/>'
+                         for k, (x, y) in enumerate(OBSTACLES))
 wheel = lambda s, y: (f'<body name="w{s}" pos="0 {y} 0"><joint name="w{s}" type="hinge" axis="0 1 0" damping=".001"/>'
                       f'<geom type="sphere" size="{WHEEL_R}" rgba="0 0 0 0" friction="1.5 .005 .0001" mass=".05"/></body>')
  
@@ -108,21 +113,24 @@ hide_rays.flags[mujoco.mjtVisFlag.mjVIS_RANGEFINDER] = False
 # ---------------------------------------------------------------------------
 LIDAR_ANGLES = np.arctan2(np.sin(2 * np.pi * np.arange(N_LIDAR) / N_LIDAR),
                           np.cos(2 * np.pi * np.arange(N_LIDAR) / N_LIDAR))
-f_px = (CAM_H / 2) / np.tan(np.radians(CAM_FOVY) / 2)
-K_CAM = np.array([[f_px, 0, CAM_W / 2], [0, f_px, CAM_H / 2], [0, 0, 1]])
+K_CAM, DIST_COEFFS = camera_intrinsics_from_fov(CAM_W, CAM_H, CAM_FOVY)
 detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50))
 corners_3d = MARKER_SIZE / 2 * np.array([[-1, 1, 0], [1, 1, 0], [1, -1, 0], [-1, -1, 0]], np.float32)
+SENSOR_PROCESSOR = SensorProcessor(NoiseConfig(), seed=SCENE_SEED)
+ACTIVE_WHEEL_SCALES = (1.0, 1.0)
  
  
 def read_encoders():
-    """Wheel angles (rad) with a little noise."""
-    return np.array([data.sensor("el").data[0], data.sensor("er").data[0]]) + rng.normal(0, 0.002, 2)
+    """Wheel angles (rad) after the configured sensor model."""
+    raw = np.array([data.sensor("el").data[0], data.sensor("er").data[0]])
+    scaled = raw * np.asarray(ACTIVE_WHEEL_SCALES)
+    return np.array([SENSOR_PROCESSOR.encoder_angle(angle) for angle in scaled])
  
  
 def read_lidar():
-    """Distance (m) for each beam; 3.5 m if nothing was hit."""
-    r = np.array([data.sensor(f"r{k}").data[0] for k in range(N_LIDAR)])
-    return np.where(r > 0, r + rng.normal(0, 0.01, N_LIDAR), 3.5)
+    """Configured noisy scan; missing returns use the sensor's -1 sentinel."""
+    raw = np.array([data.sensor(f"r{k}").data[0] for k in range(N_LIDAR)])
+    return SENSOR_PROCESSOR.maybe_drop_lidar(SENSOR_PROCESSOR.lidar_scan(raw))
  
  
 def read_marker():
@@ -132,11 +140,17 @@ def read_marker():
     corners, ids, _ = detector.detectMarkers(gray)
     if ids is None:
         return None
-    ok, _, t = cv2.solvePnP(corners_3d, corners[0].reshape(4, 2), K_CAM, None, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+    ok, _, t = cv2.solvePnP(
+        corners_3d, corners[0].reshape(4, 2), K_CAM, DIST_COEFFS,
+        flags=cv2.SOLVEPNP_IPPE_SQUARE,
+    )
     if not ok or not np.all(np.isfinite(t)):
         return None
     r, b = np.hypot(t[0, 0], t[2, 0]), np.arctan2(-t[0, 0], t[2, 0])
-    return np.array([r, b]) if r < 3.0 else None      # ignore far readings (marker too small)
+    if r >= 3.0:                                      # ignore far readings (marker too small)
+        return None
+    measurement = SENSOR_PROCESSOR.camera_measurement(r, b)
+    return np.asarray(measurement) if measurement is not None else None
  
  
 # ---------------------------------------------------------------------------
@@ -177,7 +191,6 @@ def H_rb(x):
  
  
 Q_D = np.diag([0.001 ** 2, 0.001 ** 2, np.radians(0.3) ** 2])   # wheel slip per sample
-R_N = np.diag([0.05 ** 2, np.radians(0.5) ** 2])                # camera: 5 cm range, 0.5 deg bearing
  
  
 def ekf_step(xh, P, u, z):
@@ -190,7 +203,11 @@ def ekf_step(xh, P, u, z):
         H = H_rb(xh)
         nu = z - h_rb(xh)
         nu[1] = wrap(nu[1])
-        S = H @ P @ H.T + R_N
+        R = np.diag([
+            SENSOR_PROCESSOR.config.camera_range_sigma_m ** 2,
+            SENSOR_PROCESSOR.config.camera_bearing_sigma_rad ** 2,
+        ])
+        S = H @ P @ H.T + R
         K = P @ H.T @ np.linalg.inv(S)
         xh = xh + K @ nu
         xh[2] = wrap(xh[2])
@@ -224,6 +241,10 @@ def is_free(scan, angle, width=0.23, length=0.7):
 def controller(xh, scan, mode):
     """Returns v, w, mode. Uses only the EKF estimate and the LiDAR."""
     x, y, th = xh
+    valid_scan = np.isfinite(scan) & (scan > 0.0)
+    if not valid_scan.any():
+        return 0.0, 0.0, mode
+    scan = np.where(valid_scan, scan, 3.5)
     front = scan[np.abs(LIDAR_ANGLES) < np.radians(30)].min()
     if mode == "NAVIGATE" and np.hypot(*(PRE_DOCK - xh[:2])) < 0.25:
         mode = "DOCK"
@@ -253,13 +274,82 @@ def true_pose():
     R = data.body("robot").xmat.reshape(3, 3)
     return np.array([*data.body("robot").xpos[:2], np.arctan2(R[1, 0], R[0, 0])])
  
- 
-def run(live=True):
+
+def _robot_body_ids():
+    root_id = model.body("robot").id
+    body_ids = set()
+    for body_id in range(model.nbody):
+        parent_id = body_id
+        while parent_id != 0 and parent_id != root_id:
+            parent_id = int(model.body_parentid[parent_id])
+        if parent_id == root_id:
+            body_ids.add(body_id)
+    return body_ids
+
+
+def _touching_obstacle(robot_body_ids, obstacle_geom_ids):
+    for contact_index in range(data.ncon):
+        contact = data.contact[contact_index]
+        geom1, geom2 = int(contact.geom1), int(contact.geom2)
+        if ((geom1 in obstacle_geom_ids and int(model.geom_bodyid[geom2]) in robot_body_ids)
+                or (geom2 in obstacle_geom_ids and int(model.geom_bodyid[geom1]) in robot_body_ids)):
+            return True
+    return False
+
+
+def run(live=True, seed=SCENE_SEED, disturbance=None, noise_config=None):
+    """Run one simulation trial; truth is recorded only for evaluation."""
+    global SENSOR_PROCESSOR, ACTIVE_WHEEL_SCALES
+
+    disturbance = disturbance or Disturbance()
+    disturbance.validate()
+    base_noise = noise_config or NoiseConfig()
+    trial_noise = NoiseConfig(
+        encoder_sigma_rad=base_noise.encoder_sigma_rad,
+        lidar_sigma_m=base_noise.lidar_sigma_m,
+        camera_range_sigma_m=base_noise.camera_range_sigma_m,
+        camera_bearing_sigma_rad=base_noise.camera_bearing_sigma_rad,
+        camera_pixel_sigma_px=base_noise.camera_pixel_sigma_px,
+        encoder_bias_rad_per_sample=base_noise.encoder_bias_rad_per_sample,
+        lidar_bias_m=base_noise.lidar_bias_m + disturbance.lidar_bias_m,
+        camera_dropout_probability=max(
+            base_noise.camera_dropout_probability,
+            disturbance.camera_dropout_probability,
+        ),
+        lidar_dropout_probability=max(
+            base_noise.lidar_dropout_probability,
+            disturbance.lidar_dropout_probability,
+        ),
+        outlier_probability=base_noise.outlier_probability,
+        outlier_scale=base_noise.outlier_scale,
+    )
+    SENSOR_PROCESSOR = SensorProcessor(trial_noise, seed=seed)
+    ACTIVE_WHEEL_SCALES = (
+        disturbance.wheel_scale_left,
+        disturbance.wheel_scale_right,
+    )
+    mujoco.mj_resetData(model, data)
+    start = TRUE_START + np.array([
+        disturbance.start_x_offset_m,
+        disturbance.start_y_offset_m,
+        disturbance.start_heading_offset_rad,
+    ])
+    data.qpos[:3] = [start[0], start[1], 0.034]
+    data.qpos[3:7] = [np.cos(start[2] / 2), 0.0, 0.0, np.sin(start[2] / 2)]
+    mujoco.mj_forward(model, data)
+
     for _ in range(250):                                   # let the robot settle on its wheels
         mujoco.mj_step(model, data)
     xh, P = START_POSE.copy(), np.diag([0.1 ** 2, 0.1 ** 2, np.radians(7) ** 2])
     enc_prev, mode = read_encoders(), "NAVIGATE"
-    log_est, log_true = [], []
+    log_est, log_true, log_covariance = [], [], []
+    marker_detections = 0
+    collision_steps = 0
+    docked = False
+    robot_body_ids = _robot_body_ids()
+    obstacle_geom_ids = {
+        model.geom(f"obstacle{index}").id for index in range(len(OBSTACLES))
+    }
  
     if live:
         viewer = mujoco.viewer.launch_passive(model, data)
@@ -272,6 +362,9 @@ def run(live=True):
         dots, = ax.plot([], [], "r.", ms=3, label="LiDAR")
         est_dot, = ax.plot([], [], "bo", label="EKF estimate")
         true_dot, = ax.plot([], [], "o", color="0.5", label="true pose")
+        uncertainty = Ellipse((xh[0], xh[1]), 0, 0, fill=False, color="b",
+                              linestyle=":", label="EKF 95% position")
+        ax.add_patch(uncertainty)
         ax.set_xlim(-2.6, 2.6); ax.set_ylim(-2.6, 2.6); ax.set_aspect("equal"); ax.legend(loc="lower right")
  
     for k in range(1800):                                  # up to 90 s
@@ -279,54 +372,67 @@ def run(live=True):
         # sense
         enc = read_encoders()
         d_l, d_r = (enc - enc_prev) * WHEEL_R
+        d_l += disturbance.encoder_bias_rad_per_sample * WHEEL_R
+        d_r += disturbance.encoder_bias_rad_per_sample * WHEEL_R
         enc_prev = enc
         u = np.array([(d_l + d_r) / 2 / T, (d_r - d_l) / WHEEL_SEP / T])   # measured v, w
         scan = read_lidar()
         z = read_marker()
+        marker_detections += int(z is not None)
         # estimate
         xh, P = ekf_step(xh, P, u, z)
         # control
         v, w, mode = controller(xh, scan, mode)
         set_wheels(v, w)
+        collided_this_step = False
         for _ in range(int(T / model.opt.timestep)):
             mujoco.mj_step(model, data)
-        log_est.append(xh.copy()); log_true.append(true_pose())
+            collided_this_step |= _touching_obstacle(robot_body_ids, obstacle_geom_ids)
+        collision_steps += int(collided_this_step)
+        log_est.append(xh.copy()); log_true.append(true_pose()); log_covariance.append(np.diag(P).copy())
  
         if k % 20 == 0:
             print(f"t={k*T:4.1f}s  {mode:8s}  EKF x={xh[0]:+.2f} y={xh[1]:+.2f}  "
-                  f"marker={'seen' if z is not None else '-':4s}  closest obstacle {scan.min():.2f} m")
+                  f"marker={'seen' if z is not None else '-':4s}  "
+                  f"closest obstacle {np.where(scan > 0, scan, 3.5).min():.2f} m")
         if live:
             if not viewer.is_running():
                 break
             viewer.sync()
             if k % 5 == 0:
-                dots.set_data(xh[0] + scan * np.cos(LIDAR_ANGLES + xh[2]), xh[1] + scan * np.sin(LIDAR_ANGLES + xh[2]))
+                display_scan = np.where(scan > 0, scan, 3.5)
+                dots.set_data(xh[0] + display_scan * np.cos(LIDAR_ANGLES + xh[2]),
+                              xh[1] + display_scan * np.sin(LIDAR_ANGLES + xh[2]))
                 est_dot.set_data([xh[0]], [xh[1]]); true_dot.set_data([log_true[-1][0]], [log_true[-1][1]])
+                eigenvalues, eigenvectors = np.linalg.eigh(P[:2, :2])
+                order = np.argsort(eigenvalues)[::-1]
+                major = eigenvectors[:, order[0]]
+                uncertainty.center = (xh[0], xh[1])
+                uncertainty.width = 2 * np.sqrt(5.991 * max(eigenvalues[order[0]], 0.0))
+                uncertainty.height = 2 * np.sqrt(5.991 * max(eigenvalues[order[1]], 0.0))
+                uncertainty.angle = np.degrees(np.arctan2(major[1], major[0]))
                 ax.set_title(f"{mode}   t = {k*T:.1f} s"); plt.pause(0.001)
             time.sleep(max(0, T - (time.time() - t0)))
         if mode == "DOCK" and z is not None and abs(z[0] - DOCK_DIST) < 0.03 and abs(z[1]) < 0.05:
             print(f"DOCKED at t={k*T:.1f}s")
+            docked = True
             break
  
     if live:
         viewer.close(); plt.ioff(); plt.close(fig)
-    return np.array(log_est), np.array(log_true)
- 
- 
-if __name__ == "__main__":
-    print(f"seed {SEED}  (repeat with --seed {SEED})")
-    est, true = run(live=not ARGS.headless)
-    err = np.linalg.norm(est[:, :2] - true[:, :2], axis=1)
-    print(f"final position error {err[-1]*100:.1f} cm, mean {err.mean()*100:.1f} cm; "
-          f"dock offset {true[-1, 1]*100:+.1f} cm")
-    fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-    ax[0].plot(true[:, 0], true[:, 1], "k-", label="true path")
-    ax[0].plot(est[:, 0], est[:, 1], "b--", label="EKF estimate")
-    for o in OBSTACLES:
-        ax[0].add_patch(plt.Circle(o, 0.18, color="r", alpha=.5))
-    ax[0].plot(*MARKER_XY, "gs", ms=10, label="marker")
-    ax[0].set_xlim(-2.5, 2.5); ax[0].set_ylim(-2.5, 2.5); ax[0].set_aspect("equal"); ax[0].legend(); ax[0].grid()
-    ax[1].plot(np.arange(len(err)) * T, err * 100)
-    ax[1].set_xlabel("time (s)"); ax[1].set_ylabel("EKF position error (cm)"); ax[1].grid()
-    plt.tight_layout(); plt.show()
+    estimated = np.asarray(log_est)
+    truth = np.asarray(log_true)
+    metrics = pose_error_metrics(estimated, truth)
+    metrics.update({
+        "success": docked,
+        "collisions": collision_steps,
+        "marker_visible_fraction": marker_detections / max(len(log_est), 1),
+    })
+    return {
+        **metrics,
+        "estimated_poses": estimated,
+        "true_poses": truth,
+        "covariances": np.asarray(log_covariance),
+        "docked": docked,
+    }
  

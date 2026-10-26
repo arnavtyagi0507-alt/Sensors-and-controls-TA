@@ -14,20 +14,42 @@ Nivedha : modelling and estimation
 - `src/robustness.py`: reproducible trial seeds, disturbance configuration and
   condition summaries.
 
-## Important integration notes
-1. These modules are utilities, not a complete end-to-end navigation pipeline.
-   Connect them to the group's existing MuJoCo simulation and estimator/controller.
-2. The uploaded demo already adds encoder and LiDAR noise in its reader functions.
-   If using `SensorProcessor` to add noise, remove those existing noise additions
-   or set `add_noise=False`; do not add the same noise twice.
-3. `camera_intrinsics_from_fov()` supplies nominal pinhole intrinsics from the
+## Integrated simulation
+The Track A demo now routes encoder, LiDAR and ArUco range/bearing measurements
+through `SensorProcessor`. The simulated noise is applied once in the readers;
+the EKF and controller consume those processed measurements. LiDAR no-returns
+use `-1` internally, and the controller stops if the complete scan is dropped.
+The controller and EKF use the estimate only; true pose is used for evaluation.
+`main.py` selects the noise configuration and trial disturbances, then calls the
+simulation and aggregates repeated trials with the helpers in `src/robustness.py`.
+
+Run one interactive trial from the repository root:
+```bash
+python main.py --seed 41014
+```
+
+Run repeatable headless trials comparing baseline and a documented synthetic
+disturbance condition:
+```bash
+python main.py --headless --robustness --trials 10 --seed 41014
+```
+Each condition uses the same trial seeds. The summary reports docking success
+rate, pose-error metrics, collision steps and marker visibility. The disturbed
+case combines encoder bias, LiDAR bias, camera/LiDAR dropout, wheel-scale error
+and a start-pose offset; these are stress-test settings, not measured hardware
+calibration values. The current trial batch uses one fixed obstacle layout.
+
+## Calibration and frame notes
+1. `camera_intrinsics_from_fov()` supplies nominal pinhole intrinsics from the
    MuJoCo FOV, not a measured physical-camera calibration.
-4. Confirm the camera optical axes and camera-to-base transform in the actual
-   MuJoCo model. OpenCV PnP convention is x-right, y-down, z-forward; do not
-   assume a variable named `z_c` means forward unless the frame has been verified.
-5. Keep ground-truth pose out of the control and estimation update. Use it only
-   for post-run evaluation, plots and reported metrics.
-6. Report measured/estimated noise values honestly. Do not present the default
+2. In the included MuJoCo XML, the camera origin is 0.07 m forward of the robot
+   centre. Its `xyaxes` make camera-right point along robot -y and camera-up
+   point along +z; the MuJoCo view direction is robot +x. This agrees with the
+   PnP interpretation used by the demo: camera `t_z` is forward, `t_x` is right,
+   and `atan2(-t_x, t_z)` is positive to the robot's left. Re-check this mapping
+   if the camera pose or model changes.
+3. The live plot shows the true pose, EKF estimate and a 95% position covariance
+   ellipse. Report measured/estimated noise values honestly; do not present the default
    values as empirically calibrated unless you have collected calibration data.
 
 ## Quick import check
@@ -44,6 +66,6 @@ print(K)
 ```
 
 ## Dependencies
-NumPy is required. The full MuJoCo demo additionally uses `mujoco`, `opencv-contrib-python`
-and `matplotlib` as applicable to the existing team code.
-
+Install the runtime dependencies from the repository root with
+`python -m pip install -r requirements.txt`. The demo uses NumPy, MuJoCo,
+OpenCV-contrib, SciPy and Matplotlib.

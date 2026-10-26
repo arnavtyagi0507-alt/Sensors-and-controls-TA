@@ -1,9 +1,4 @@
-"""Small evaluation helpers for repeated Track A robustness trials.
-
-This file does not run MuJoCo by itself. Import the team's run function and
-call run_one_trial(seed=..., noise_config=..., disturbance=...) after adding
-the corresponding arguments to the simulation.
-"""
+"""Reproducible trial seeds, disturbances and condition summaries for Track A."""
 from dataclasses import dataclass
 import numpy as np
 

@@ -2,3 +2,4 @@ mujoco
 numpy
 opencv-contrib-python
 matplotlib
+scipy
