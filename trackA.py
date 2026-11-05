@@ -7,6 +7,8 @@ import mujoco
 import mujoco.viewer
 import scipy.linalg
 import matplotlib.pyplot as plt
+import sympy as sp
+import control as ct
  
 # --- settings ---
 WHEEL_R, WHEEL_SEP = 0.033, 0.160     #turtle bit wheel radius and seperation (m)
@@ -126,15 +128,25 @@ def read_lidar():
  
 def read_marker():
     renderer.update_scene(data, camera="cam", scene_option=hide_rays)
-    gray = cv2.cvtColor(renderer.render(), cv2.COLOR_RGB2GRAY)
+    img = renderer.render()
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     corners, ids, _ = detector.detectMarkers(gray)
-    if ids is None:
-        return None
-    ok, _, t = cv2.solvePnP(corners_3d, corners[0].reshape(4, 2), K_CAM, None, flags=cv2.SOLVEPNP_IPPE_SQUARE)
-    if not ok or not np.all(np.isfinite(t)):
-        return None
-    r, b = np.hypot(t[0, 0], t[2, 0]), np.arctan2(-t[0, 0], t[2, 0])
-    return np.array([r, b]) if r < 3.0 else None      # ignore far readings (marker too small)
+    result = None
+    if ids is not None:
+        ok, _, t = cv2.solvePnP(corners_3d, corners[0].reshape(4, 2), K_CAM, None, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+        if ok and np.all(np.isfinite(t)):
+            r, b = np.hypot(t[0, 0], t[2, 0]), np.arctan2(-t[0, 0], t[2, 0])
+            if r < 3.0:                                   # ignore far readings (marker too small)
+                result = np.array([r, b])
+    if not ARGS.headless:                                 # show the robot camera
+        frame = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        if ids is not None:
+            cv2.polylines(frame, [corners[0].reshape(4, 2).astype(int)], True, (0, 255, 0), 2)
+        text = f"range {result[0]:.2f} m, bearing {np.degrees(result[1]):+.1f} deg" if result is not None else "marker not seen"
+        cv2.putText(frame, text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.imshow("robot camera", frame)
+        cv2.waitKey(1)
+    return result
  
  
 # --- estimation: EKF for unicycle + range/bearing to marker ---
@@ -316,10 +328,6 @@ if __name__ == "__main__":
     ax[1].set_xlabel("time (s)"); ax[1].set_ylabel("EKF position error (cm)"); ax[1].grid()
     plt.tight_layout(); plt.show()
 
-#importing the required libraries
-import numpy as np
-import sympy as sp
-import control as ct
 
 T = 0.05
 WHEEL_R = 0.033
@@ -420,14 +428,11 @@ def tracking_error_ss(v0):
 
 
 def main():
-    import matplotlib.pyplot as plt
     np.set_printoptions(precision=3, suppress=True)
 
-    print('jacobian checks')
     xt, ut = np.array([-0.3, 1.5, 0.5]), np.array([0.13, -0.2])
     print("Largest difference between analytic and numerical F: =",
           np.abs(F_uni(xt, ut) - num_jac(lambda s: f_uni(s, ut), xt)).max())
-    print("encoders_to_u(1 rad, 1 rad) =", encoders_to_u(1.0, 1.0), "(straight, 0.66 m/s)")
 
     A_lin, B_lin = linearise_sympy()
     print("A = ", A_lin.tolist(), "\nB = ", B_lin.tolist())
@@ -445,13 +450,8 @@ def main():
     print("Ad =\n", sysd.A, "\nBd =\n", sysd.B)
 
     A_full, B_full = unicycle_lin(0.15)
-    print("Full 3-state model at 0.15 m/s - controllability rank:", np.linalg.matrix_rank(ct.ctrb(A_full, B_full)),
-      " stabilisable (PBH):", pbh_stabilisable(A_full, B_full))
-    print("Rank drops at zero speed: a stopped robot cannot correct a sideways error.")
 
     operating_point = np.array([0.20,0.04,0.0])
-    print(f"Observability, linearised at pose {operating_point} with heading 0:")
-    print("Odometry only: no measurement, C is empty -> nothing observable.")
 
     for name, Hf in (( "range only", H_range), ("range + bearing", H_rb)):
         C = Hf(operating_point)
@@ -468,8 +468,6 @@ def main():
             print(line)
 
 
-    print("Range + bearing: observable only while the robot moves. Standing still,")
-    print("one direction cannot be told from the measurement. Range only is not observable.")
 
     fig, ax = plt.subplots(1,2, figsize = (10,4))
     speeds = np.linspace(0,0.2,101)
@@ -487,134 +485,83 @@ def main():
 
     fig.tight_layout()
     fig.savefig("modelling_results.png", dpi=130)
-    print("Figure written to modelling_results.png")
 
 
 if __name__ == "__main__":
     main()
 
-"""
-41014 Track A - Part C: Estimation
-==================================
-Extended Kalman filter fusing wheel-encoder odometry with the range and
-bearing to the ArUco marker from the camera.
-
-Only methods from the tutorials:
-  Week 2  calibrated scale factors: r_hat = r * d_true / d_reported (B.3),
-          used for the wheel radius and for the camera range; a constant
-          bias is removed by calibration (Part 0)
-  Week 7  ekf_predict / ekf_update, f_uni / F_uni, h_rb, wrapping the bearing
-          innovation (C.5), simulate() with dead reckoning vs EKF, the
-          2-sigma envelope check, the Qd-scale sweep (RMSE and 2-sigma
-          coverage), the "trust dial" (Rn scale)
-  Week 8  Qd and Rn from physical units (slide "Testing under realistic
-          noise"), what happens when localisation degrades (C.2, max range),
-          the closed loop driving on the estimate (C.1), consistency check
-          "fraction of steps inside the 2-sigma envelope" (C.3)
-
-Two ways to use it:
-
-1. In the simulator (trackAtest.py): add, just after the old ekf_step function,
-       from estimation import ekf_step
-   The existing call  xh, P = ekf_step(xh, P, u, z)  stays exactly as it is.
-
-2. Offline (no MuJoCo, about a minute):
-       python estimation.py
-   runs the Week 7 / Week 8 experiments and saves the plots.
-
-Keep this file in the same folder as modelling.py and trackAtest.py. Every number in
-Section 1 comes from calibration.py.
-"""
-import numpy as np
 
 
-# ---------------------------------------------------------------------------
-# 1. Parameters from calibration.py (physical units, Week 8)
-# ---------------------------------------------------------------------------
-WHEEL_R_CAL = 0.03248        # m, calibrated wheel radius (Week 2 B.3)
-RANGE_SCALE = 0.9868         # true range / solvePnP range (Week 2 B.3 ratio)
-BEARING_BIAS = np.deg2rad(0.062)   # constant solvePnP bearing bias, subtracted (Week 2 Part 0)
 
-# Qd acts on the state increment each step; Rn on [range, bearing] (Week 7).
-# QD = 3 x the one-step model error variance: the scale whose 2-sigma
-# envelope covers 95 % of the odometry error (calibration.py Part 2).
+
+WHEEL_R_CAL = 0.03248        # m, calibrated wheel radius 
+RANGE_SCALE = 0.9868         # true range / solvePnP range 
+BEARING_BIAS = np.deg2rad(0.062)   # constant solvePnP bearing bias, subtracted 
+
+
 QD = np.diag([0.000125 ** 2, 0.000077 ** 2, np.deg2rad(0.0843) ** 2])
 RN = np.diag([0.0136 ** 2, np.deg2rad(0.041) ** 2])
 
-P0 = np.diag([0.1 ** 2, 0.1 ** 2, np.deg2rad(7) ** 2])   # as in trackAtest.py
+P_start = np.diag([0.1 ** 2, 0.1 ** 2, np.deg2rad(7) ** 2])  
 
 
-# ---------------------------------------------------------------------------
-# 2. EKF (Week 7 C.3)
-# ---------------------------------------------------------------------------
-def ekf_predict(xh, P, u, f, F_jac, Qd):
-    xh_pred = f(xh, u)                       # nonlinear f propagates the state
-    F = F_jac(xh, u)                         # Jacobian propagates the covariance
-    P_pred = F @ P @ F.T + Qd
-    return xh_pred, P_pred
 
-
-def ekf_update(xh_pred, P_pred, y, h, H_jac, Rn, residual=None):
+def ekf_correction(xh_pred, P_pred, y, h, H_jac, Rn, residual=None):
     y_hat = h(xh_pred)                       # nonlinear h gives the expected measurement
     H = H_jac(xh_pred)
-    S = H @ P_pred @ H.T + Rn                # innovation covariance
+    S = H @ P_pred @ H.T + Rn                
     K = P_pred @ H.T @ np.linalg.inv(S)      # Kalman gain
     nu = (y - y_hat) if residual is None else residual(y, y_hat)
     xh = xh_pred + K @ nu
     P = (np.eye(len(xh_pred)) - K @ H) @ P_pred
     return xh, P, nu, S
 
-
-def rb_residual(y, y_hat):
-    '''Wrap the bearing innovation (Week 7 C.5: without it, +179 deg vs
-    -179 deg looks like a 358 deg error).'''
-    return np.array([y[0] - y_hat[0], wrap(y[1] - y_hat[1])])
-
-
 def ekf_step(xh, P, u, z, Qd=QD, Rn=RN, calibrated=True):
-    """One filter cycle. Drop-in replacement for ekf_step() in trackAtest.py.
-
-    u : [v, omega] from the encoders, computed in trackAtest.py with r = 0.033
-    z : None (marker not seen) or [range, bearing] from solvePnP
-    """
     u = np.asarray(u, float)
     if calibrated:
-        u = u * WHEEL_R_CAL / WHEEL_R        # Week 2 B.3: use the calibrated radius
-    xh, P = ekf_predict(xh, P, u, f_uni, F_uni, Qd)
+        u = u * WHEEL_R_CAL / WHEEL_R        
+    xh, P = ekf_prediction(xh, P, u, f_uni, F_uni, Qd)
     xh[2] = wrap(xh[2])
     if z is not None:
-        if calibrated:                       # Week 2: remove the calibrated scale and bias
+        if calibrated:                       
             y = np.array([z[0] * RANGE_SCALE, z[1] - BEARING_BIAS])
         else:
             y = np.array([z[0], z[1]])
-        xh, P, _, _ = ekf_update(xh, P, y, h_rb, H_rb, Rn, rb_residual)
+        xh, P, _, _ = ekf_correction(xh, P, y, h_rb, H_rb, Rn, range_bearing_residual)
         xh[2] = wrap(xh[2])
     return xh, P
 
 
-# ---------------------------------------------------------------------------
-# 3. Offline simulation (Week 7 simulate(), Week 8 C.1 closed loop)
-# ---------------------------------------------------------------------------
-START = np.array([-1.5, -0.5, np.deg2rad(30)])
+def ekf_prediction(xh, P, u, f, F_jac, Qd):
+    xh_pred = f(xh, u)                       # nonlinear f propagates the state
+    F = F_jac(xh, u)                         
+    P_pred = F @ P @ F.T + Qd
+    return xh_pred, P_pred
+
+def range_bearing_residual(y, y_hat):
+    return np.array([y[0] - y_hat[0], wrap(y[1] - y_hat[1])])
+
+
+
+
+
+SIM_START = np.array([-1.5, -0.5, np.deg2rad(30)])
 PRE_DOCK = np.array([1.54, 0.0])
 DOCK_X = 2.0
-MAX_RANGE = 3.0              # trackAtest.py ignores marker readings beyond 3 m
+CAM_MAX_RANGE = 3.0             
 N_STEPS = 700
 
 
-def simulate(seed=1, max_range=MAX_RANGE, Qd_f=None, Rn_f=None, use_ekf=True):
-    '''True robot + dead reckoning + EKF, as in Week 7. Qd_f and Rn_f are what
-    the FILTER is told. The robot steers on the EKF estimate (Week 8 C.1):
-    to the pre-dock point, then along y = 0 towards the marker.'''
+def simulate(seed=1, max_range=CAM_MAX_RANGE, Qd_filter=None, Rn_filter=None, use_ekf=True):
     r = np.random.default_rng(seed)
-    Qd_f = QD if Qd_f is None else Qd_f
-    Rn_f = RN if Rn_f is None else Rn_f
+    Qd_filter = QD if Qd_filter is None else Qd_filter
+    Rn_filter = RN if Rn_filter is None else Rn_filter
 
-    x_true = START.copy()
-    x_dr = x_true.copy()
-    xh = x_true.copy()
-    P = P0.copy()
-    TRUE, DR, XH, PP, SEEN = [x_true.copy()], [x_dr.copy()], [xh.copy()], [P.copy()], [False]
+    true_pose = SIM_START.copy()
+    x_dr = true_pose.copy()
+    xh = true_pose.copy()
+    P = P_start.copy()
+    TRUE, DR, XH, PP, SEEN = [true_pose.copy()], [x_dr.copy()], [xh.copy()], [P.copy()], [False]
 
     for k in range(N_STEPS):
         # --- controller on the estimate
@@ -625,67 +572,61 @@ def simulate(seed=1, max_range=MAX_RANGE, Qd_f=None, Rn_f=None, use_ekf=True):
         if goal[0] == DOCK_X and dist < 0.03:
             u = (0.0, 0.0)                                  # docked: stop
         # --- true motion, with process noise actually applied
-        x_true = f_uni(x_true, u) + r.multivariate_normal(np.zeros(3), QD)
-        x_true[2] = wrap(x_true[2])
+        true_pose = f_uni(true_pose, u) + r.multivariate_normal(np.zeros(3), QD)
+        true_pose[2] = wrap(true_pose[2])
         # --- dead reckoning: same u, no corrections
         x_dr = f_uni(x_dr, u)
         # --- camera: marker within range
         z = None
-        if np.hypot(*(MARKER - x_true[:2])) <= max_range:
-            z = h_rb(x_true) + r.multivariate_normal(np.zeros(2), RN)
+        if np.hypot(*(MARKER - true_pose[:2])) <= max_range:
+            z = h_rb(true_pose) + r.multivariate_normal(np.zeros(2), RN)
         if use_ekf:
-            xh, P = ekf_step(xh, P, u, z, Qd_f, Rn_f, calibrated=False)
+            xh, P = ekf_step(xh, P, u, z, Qd_filter, Rn_filter, calibrated=False)
         else:
-            xh, P = ekf_step(xh, P, u, None, Qd_f, Rn_f, calibrated=False)
-        TRUE.append(x_true.copy()); DR.append(x_dr.copy()); XH.append(xh.copy())
+            xh, P = ekf_step(xh, P, u, None, Qd_filter, Rn_filter, calibrated=False)
+        TRUE.append(true_pose.copy()); DR.append(x_dr.copy()); XH.append(xh.copy())
         PP.append(P.copy()); SEEN.append(z is not None)
     return {"true": np.array(TRUE), "dr": np.array(DR), "xh": np.array(XH),
             "P": np.array(PP), "seen": np.array(SEEN)}
 
 
 def score(out):
-    '''Week 7 / Week 8 C.3: position RMSE, final error, and the fraction of
-    steps where the true position error is inside the filter's own 2-sigma
-    envelope (should be about 0.95).'''
     e = np.linalg.norm(out["true"][:, :2] - out["xh"][:, :2], axis=1)
     env = 2 * np.sqrt(out["P"][:, 0, 0] + out["P"][:, 1, 1])
     return np.sqrt(np.mean(e ** 2)), e[-1], np.mean(e < env)
 
 
-def averaged(n_seeds=20, **kw):
-    s = np.array([score(simulate(seed=sd, **kw)) for sd in range(n_seeds)])
+def mean_over_seeds(num_runs=20, **kw):
+    s = np.array([score(simulate(seed=sd, **kw)) for sd in range(num_runs)])
     return s.mean(axis=0)
 
 
-def main(n_seeds=20):
-    import matplotlib.pyplot as plt
+def main(num_runs=20):
 
-    print(f"Each line: mean over {n_seeds} seeded runs\n")
-    print("=== Dead reckoning vs EKF (Week 7 C.4) ===")
+    print("=== Dead reckoning vs EKF ===")
     print(f"{'':16s} {'RMSE [m]':>9s} {'final [m]':>10s} {'2-sigma coverage':>17s}")
-    dr = [simulate(seed=sd) for sd in range(n_seeds)]
+    dr = [simulate(seed=sd) for sd in range(num_runs)]
     e_dr = [np.linalg.norm(o["true"][:, :2] - o["dr"][:, :2], axis=1) for o in dr]
     print(f"{'dead reckoning':16s} {np.mean([np.sqrt(np.mean(e**2)) for e in e_dr]):9.3f} "
           f"{np.mean([e[-1] for e in e_dr]):10.3f} {'-':>17s}")
-    print(f"{'odometry-only P':16s} " + "{:9.3f} {:10.3f} {:17.2f}".format(*averaged(n_seeds, use_ekf=False)))
-    print(f"{'EKF':16s} " + "{:9.3f} {:10.3f} {:17.2f}".format(*averaged(n_seeds)))
+    print(f"{'EKF':16s} " + "{:9.3f} {:10.3f} {:17.2f}".format(*mean_over_seeds(num_runs)))
 
-    print("\n=== Qd scale (Week 7: what the filter is told vs the truth) ===")
+    print("\nQd scale")
     print(f"{'Qd scale':>9s} {'RMSE [m]':>9s} {'final [m]':>10s} {'2-sigma coverage':>17s}")
     for s in [0.01, 0.1, 1.0, 10.0, 100.0]:
-        print(f"{s:9.2f} " + "{:9.3f} {:10.3f} {:17.2f}".format(*averaged(n_seeds, Qd_f=s * QD)))
+        print(f"{s:9.2f} " + "{:9.3f} {:10.3f} {:17.2f}".format(*mean_over_seeds(num_runs, Qd_filter=s * QD)))
 
-    print("\n=== Rn scale: the trust dial (Week 7) ===")
+    print("\n Rn scale: the trust dial ")
     print(f"{'Rn scale':>9s} {'RMSE [m]':>9s} {'final [m]':>10s} {'2-sigma coverage':>17s}")
     for s in [0.1, 1.0, 10.0]:
-        print(f"{s:9.2f} " + "{:9.3f} {:10.3f} {:17.2f}".format(*averaged(n_seeds, Rn_f=s * RN)))
+        print(f"{s:9.2f} " + "{:9.3f} {:10.3f} {:17.2f}".format(*mean_over_seeds(num_runs, Rn_filter=s * RN)))
 
-    print("\n=== Localisation degrades: shorter camera range (Week 8 C.2) ===")
+    print("\n Localisation degrades: shorter camera range")
     print(f"{'max range':>9s} {'RMSE [m]':>9s} {'final [m]':>10s} {'2-sigma coverage':>17s}")
     for mr in [3.0, 2.0, 1.0]:
-        print(f"{mr:8.1f}m " + "{:9.3f} {:10.3f} {:17.2f}".format(*averaged(n_seeds, max_range=mr)))
+        print(f"{mr:8.1f}m " + "{:9.3f} {:10.3f} {:17.2f}".format(*mean_over_seeds(num_runs, max_range=mr)))
 
-    # --- plots, Week 7 style, for one run
+    
     res = simulate(seed=1)
     t_k = np.arange(len(res["xh"])) * T
     err = np.linalg.norm(res["true"][:, :2] - res["xh"][:, :2], axis=1)
@@ -709,17 +650,11 @@ def main(n_seeds=20):
     plt.axis("equal"); plt.grid(alpha=.3); plt.legend(); plt.xlabel("x [m]"); plt.ylabel("y [m]")
     plt.title("True path, dead reckoning and EKF")
     plt.tight_layout(); plt.savefig("estimation_paths.png", dpi=130)
-    print("\nSaved estimation_error_2sigma.png and estimation_paths.png")
 
 
 if __name__ == "__main__":
     main()
 
-#importing the required libraries
-import numpy as np
-import cv2
-import mujoco
-import matplotlib.pyplot as plt
 
 
 CAM_W = 640
@@ -799,6 +734,7 @@ def build_scene():
     return model, data, renderer
 
 
+sim_renderer = renderer
 model, data, renderer = build_scene()
 
 f_px = (CAM_H / 2) / np.tan(np.radians(CAM_FOVY) / 2)        # pinhole focal length (px)
@@ -816,10 +752,10 @@ def calibrate_wheel_radius():
         drive_step(STRAIGHT_SPEED,0.0)
 
     p1, e1 = get_true_pose(), encoders()
-    dist_true = np.hypot(*(p1[:2]-pose_start[:2]))
+    true_distance = np.hypot(*(p1[:2]-pose_start[:2]))
 
     d_reported = WHEEL_R * (e1-e0).mean() 
-    return WHEEL_R * dist_true / d_reported, dist_true, d_reported # the true distance, and scale the radius: r_hat = r * d_true / d_reported
+    return WHEEL_R * true_distance / d_reported, true_distance, d_reported # the true distance, and scale the radius: r_hat = r * d_true / d_reported
 
 def set_robot_pose(x,y,th,settle=350):
     mujoco.mj_resetData(model, data)
@@ -971,11 +907,11 @@ def drive_logs(radius_est, seed = DRIVE_SEED, seconds = DRIVE_TIME):
 
 
 
-def print_results(radius_est, dist_true, d_reported, Qd0, coverage_table, s_pick, sd,
+def print_results(radius_est, true_distance, d_reported, Qd0, coverage_table, s_pick, sd,
                   scale, e_r_std, e_b_std, e_b_mean, tries, bands):
     text = f"""
 === Results ===
-Part 1 (Week 2 B.3): reported {d_reported:.4f} m, true {dist_true:.4f} m
+Part 1: reported {d_reported:.4f} m, true {true_distance:.4f} m
 Part 2: one-step model error sd: x {np.sqrt(Qd0[0, 0]) * 1000:.3f} mm, y {np.sqrt(Qd0[1, 1]) * 1000:.3f} mm, heading {np.degrees(np.sqrt(Qd0[2, 2])):.4f} deg
         Qd scale vs 2-sigma coverage of dead-reckoning error (target {COVERAGE_TARGET}):
 """
@@ -1002,7 +938,7 @@ Saved calibration_qd.png, calibration_camera.png and {RESULTS_FILE}"""
 
 def main():
     print("Part 1: wheel radius")
-    radius_est, dist_true, d_reported = calibrate_wheel_radius()
+    radius_est, true_distance, d_reported = calibrate_wheel_radius()
     print("Part 2: process noise")
     Qd0, coverage_table = estimate_process_noise(drive_logs(radius_est))
     print("Part 3: camera calibration")
@@ -1012,7 +948,7 @@ def main():
     s_pick = good[0] if len(good) > 0 else coverage_table[-1][0]
     sd = np.sqrt(np.diag(Qd0) * s_pick)
     plot_qd_coverage(coverage_table, s_pick)
-    print_results(radius_est, dist_true, d_reported, Qd0, coverage_table, s_pick, sd,
+    print_results(radius_est, true_distance, d_reported, Qd0, coverage_table, s_pick, sd,
                   scale, e_r_std, e_b_std, e_b_mean, tries, bands)
 
 
