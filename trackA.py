@@ -57,7 +57,7 @@ def marker_png():
 lidar_sites = "".join(f'<site name="l{k}" pos="0 0 .09" zaxis="{np.cos(2*np.pi*k/N_LIDAR):.4f} '
                       f'{np.sin(2*np.pi*k/N_LIDAR):.4f} 0"/>' for k in range(N_LIDAR))
 lidar_sensors = "".join(f'<rangefinder name="r{k}" site="l{k}" cutoff="3.5"/>' for k in range(N_LIDAR))
-obstacle_geoms = "".join(f'<geom type="cylinder" pos="{x:.2f} {y:.2f} .2" size=".18 .2" rgba=".8 .3 .3 1"/>'
+obstacle_geoms = "".join(f'<geom type="cylinder" pos="{x:.2f} {y:.2f} .2" size=".18 .2" rgba="0 0 .5 1"/>'
                          for x, y in OBSTACLES)
 wheel = lambda s, y: (f'<body name="w{s}" pos="0 {y} 0"><joint name="w{s}" type="hinge" axis="0 1 0" damping=".001"/>'
                       f'<geom type="sphere" size="{WHEEL_R}" rgba="0 0 0 0" friction="1.5 .005 .0001" mass=".05"/></body>')
@@ -471,15 +471,15 @@ def main():
 
     fig, ax = plt.subplots(1,2, figsize = (10,4))
     speeds = np.linspace(0,0.2,101)
-    ax[0].plot(speeds, [np.abs(np.linalg.det(ct.ctrb(*tracking_error_ss(V)))) for V in speeds])
-    ax[0].axvline(0.15, ls="--", c="g", label="navigation speed")
+    ax[0].plot(speeds, [np.abs(np.linalg.det(ct.ctrb(*tracking_error_ss(V)))) for V in speeds], color="navy")
+    ax[0].axvline(0.15, ls="--", c="navy", label="navigation speed")
     ax[0].set_xlabel("v0 (m/s)"); ax[0].set_ylabel("|det [B, AB]|")
     ax[0].set_title("Controllability of [e_y, e_theta]"); ax[0].legend(); ax[0].grid(alpha=.3)
 
-    for name, Hf in (("range only", H_range), ("range + bearing", H_rb)):
+    for name, Hf, style in (("range only", H_range, "--"), ("range + bearing", H_rb, "-")):
         C = Hf(operating_point)
         ax[1].plot(speeds, [np.linalg.svd(ct.obsv(unicycle_lin(V)[0], C), compute_uv=False)[-1]
-                        for V in speeds], label=name)
+                        for V in speeds], label=name, color="navy", ls=style)
     ax[1].set_xlabel("v0 (m/s)"); ax[1].set_ylabel("smallest singular value of O")
     ax[1].set_title("Observability vs speed"); ax[1].legend(); ax[1].grid(alpha=.3)
 
