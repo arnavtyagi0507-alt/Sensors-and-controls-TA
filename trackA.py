@@ -503,14 +503,12 @@ if __name__ == "__main__":
 
 
 
-# --- Separate calibration/EKF study; these constants do not configure trackA_demo.py ---
-WHEEL_R_CAL = 0.03248        # m, calibrated wheel radius
-RANGE_SCALE = 0.9868         # true range / solvePnP range 
-BEARING_BIAS = np.deg2rad(0.062)   # constant solvePnP bearing bias, subtracted 
-
-
-QD = np.diag([0.000125 ** 2, 0.000077 ** 2, np.deg2rad(0.0843) ** 2])
-RN = np.diag([0.0136 ** 2, np.deg2rad(0.041) ** 2])
+#Separate calibration/EKF study
+WHEEL_R_CAL = 0.03242
+RANGE_SCALE = 0.9863
+QD = np.diag([0.000118 ** 2, 0.000082 ** 2, np.deg2rad(0.0812) ** 2])
+BEARING_BIAS = np.deg2rad(0.065)
+RN = np.diag([0.0156 ** 2, np.deg2rad(0.028) ** 2])
 
 P_start = np.diag([0.1 ** 2, 0.1 ** 2, np.deg2rad(7) ** 2])  
 
