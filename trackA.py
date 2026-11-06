@@ -1,3 +1,5 @@
+# This file combines several analysis prototypes (MuJoCo demo, model analysis,
+# EKF simulation, and calibration). It is separate from trackA_demo.py.
 import argparse
 import time
  
@@ -10,7 +12,7 @@ import matplotlib.pyplot as plt
 import sympy as sp
 import control as ct
  
-# --- settings ---
+# --- First prototype: physical parameters and the EKF/LQR navigation example ---
 WHEEL_R, WHEEL_SEP = 0.033, 0.160     #turtle bit wheel radius and seperation (m)
 MARKER_XY = np.array([2.44, 0.0])          # ArUco marker position (m)
 MARKER_SIZE = 0.20                         
@@ -149,7 +151,7 @@ def read_marker():
     return result
  
  
-# --- estimation: EKF for unicycle + range/bearing to marker ---
+# --- EKF example: state is [world x, world y, heading], input is [v, omega] ---
 def wrap(a):
     return (a + np.pi) % (2 * np.pi) - np.pi
  
@@ -171,6 +173,7 @@ MARKER_FACE = MARKER_XY - [0.005, 0]
  
  
 def h_rb(x):
+    # Predict marker range and bearing, including the camera's forward offset.
     dx = MARKER_FACE[0] - (x[0] + CAM_OFFSET * np.cos(x[2]))
     dy = MARKER_FACE[1] - (x[1] + CAM_OFFSET * np.sin(x[2]))
     return np.array([np.hypot(dx, dy), wrap(np.arctan2(dy, dx) - x[2])])
@@ -185,7 +188,7 @@ meas_noise = np.diag([0.05 ** 2, np.radians(0.5) ** 2])                # camera:
  
  
 def ekf_step(xh, P, u, z):
-    # predict with the wheel encoders
+    # Predict pose/covariance from wheel motion, then correct only when a marker is observed.
     F = F_uni(xh, u)
     xh = f_uni(xh, u)
     P = F @ P @ F.T + process_noise
@@ -202,7 +205,7 @@ def ekf_step(xh, P, u, z):
     return xh, P
  
  
-# --- Control ---
+# --- LQR example: steer lateral and heading errors; LiDAR filters unsafe headings ---
 def lqr_gain(V):
     Ad = np.array([[1, V * T], [0, 1]])                  # error model e = [e_y, e_th]
     Bd = np.array([[V * T ** 2 / 2], [T]])
@@ -223,6 +226,7 @@ def is_free(scan, angle, width=0.23, length=0.7):
  
  
 def controller(xh, scan, mode):
+    # This prototype controller uses the EKF estimate and LiDAR, not true_pose().
     x, y, th = xh
     front = scan[np.abs(LIDAR_ANGLES) < np.radians(30)].min()
     if mode == "NAVIGATE" and np.hypot(*(PRE_DOCK - xh[:2])) < 0.25:
@@ -242,7 +246,7 @@ def controller(xh, scan, mode):
     return v, w, mode
  
  
-# --- Main loop ---
+# --- Main loop for the first MuJoCo EKF/LQR example ---
 def set_wheels(v, w):
     data.ctrl[:] = [(v - w * WHEEL_SEP / 2) / WHEEL_R, (v + w * WHEEL_SEP / 2) / WHEEL_R]
  
@@ -329,6 +333,7 @@ if __name__ == "__main__":
     plt.tight_layout(); plt.show()
 
 
+# --- Separate model-analysis section: wheel kinematics and a straight-line linearisation ---
 T = 0.05
 WHEEL_R = 0.033
 WHEEL_SEP = 0.16
@@ -393,13 +398,14 @@ def H_rb(xh, mk = MARKER):
 def H_range(xh, mk = MARKER):
     return num_jac(lambda s: h_range(s, mk), xh)
 
-#linearised unicycle about driving straight along x (theta = 0) at speed v0
+# Linearise at forward speed v0; the input matrix describes acceleration/turning authority.
 def unicycle_lin(v0):
     Au = np.array([[0.0,0,0],[0,0,v0],[0,0,0]])
     Bu = np.array([[1.0,0],[0,0],[0,1.0]]) # sideways error while the robot is moving.
     return Au, Bu
 
 def pbh_stabilisable(A,B, tol = 1e-8):
+    # PBH test: unstable modes must be reachable through the inputs.
     n = A.shape[0]
     return all(np.linalg.matrix_rank(np.hstack([A - lam * np.eye(n), B]), tol) == n
                for lam in np.linalg.eigvals(A) if lam.real >= -tol)
@@ -414,6 +420,7 @@ def linearise_sympy():
     return f.jacobian(X).subs(op), f.jacobian(U).subs(op)
 
 def pbh_detectable(A,C, tol = 1e-8):
+    # PBH test: unstable modes must be visible through the measurements.
     n = A.shape[0]
     return all(np.linalg.matrix_rank(np.vstack([A - lam * np.eye(n), C]), tol) == n
                for lam in np.linalg.eigvals(A) if lam.real >= -tol)
@@ -421,6 +428,7 @@ def pbh_detectable(A,C, tol = 1e-8):
 
 
 def tracking_error_ss(v0):
+    # Reduced two-state model [lateral error, heading error] used by the LQR analysis.
     return np.array([[0.0, v0], [0.0, 0.0]]), np.array([[0.0], [1.0]])
 
 
@@ -428,6 +436,7 @@ def tracking_error_ss(v0):
 
 
 def main():
+    # Print model checks and save controllability/observability analysis plots.
     np.set_printoptions(precision=3, suppress=True)
 
     xt, ut = np.array([-0.3, 1.5, 0.5]), np.array([0.13, -0.2])
@@ -494,7 +503,8 @@ if __name__ == "__main__":
 
 
 
-WHEEL_R_CAL = 0.03248        # m, calibrated wheel radius 
+# --- Separate calibration/EKF study; these constants do not configure trackA_demo.py ---
+WHEEL_R_CAL = 0.03248        # m, calibrated wheel radius
 RANGE_SCALE = 0.9868         # true range / solvePnP range 
 BEARING_BIAS = np.deg2rad(0.062)   # constant solvePnP bearing bias, subtracted 
 
@@ -507,6 +517,7 @@ P_start = np.diag([0.1 ** 2, 0.1 ** 2, np.deg2rad(7) ** 2])
 
 
 def ekf_correction(xh_pred, P_pred, y, h, H_jac, Rn, residual=None):
+    # Kalman gain balances predicted uncertainty against measurement uncertainty.
     y_hat = h(xh_pred)                       # nonlinear h gives the expected measurement
     H = H_jac(xh_pred)
     S = H @ P_pred @ H.T + Rn                
@@ -517,6 +528,7 @@ def ekf_correction(xh_pred, P_pred, y, h, H_jac, Rn, residual=None):
     return xh, P, nu, S
 
 def ekf_step(xh, P, u, z, Qd=QD, Rn=RN, calibrated=True):
+    # Apply wheel/range/bearing calibration, predict, then optionally correct from camera.
     u = np.asarray(u, float)
     if calibrated:
         u = u * WHEEL_R_CAL / WHEEL_R        
@@ -553,6 +565,7 @@ N_STEPS = 700
 
 
 def simulate(seed=1, max_range=CAM_MAX_RANGE, Qd_filter=None, Rn_filter=None, use_ekf=True):
+    # Seeded synthetic study compares EKF state estimates against dead reckoning and truth.
     r = np.random.default_rng(seed)
     Qd_filter = QD if Qd_filter is None else Qd_filter
     Rn_filter = RN if Rn_filter is None else Rn_filter
@@ -591,6 +604,7 @@ def simulate(seed=1, max_range=CAM_MAX_RANGE, Qd_filter=None, Rn_filter=None, us
 
 
 def score(out):
+    # Position RMSE/final error measure accuracy; coverage checks whether uncertainty is realistic.
     e = np.linalg.norm(out["true"][:, :2] - out["xh"][:, :2], axis=1)
     env = 2 * np.sqrt(out["P"][:, 0, 0] + out["P"][:, 1, 1])
     return np.sqrt(np.mean(e ** 2)), e[-1], np.mean(e < env)
@@ -657,6 +671,7 @@ if __name__ == "__main__":
 
 
 
+# --- Calibration experiment: independently build a scene and collect sensor references ---
 CAM_W = 640
 CAM_H = 480
 CAM_FOVY = 60
@@ -745,6 +760,7 @@ corners_3d = MARKER_SIZE / 2 * np.array([[-1, 1, 0], [1, 1, 0], [1, -1, 0], [-1,
 #drive a straight line, compare distance from the encoders with
 
 def calibrate_wheel_radius():
+    # Compare encoder distance to simulator reference distance to estimate an effective wheel radius.
     set_robot_pose(*STRAIGHT_START)
     pose_start,e0 = get_true_pose(), encoders()
 
@@ -806,6 +822,7 @@ def get_true_pose():
 
 # covers ~95 % of the dead-reckoning error.
 def estimate_process_noise(logs):
+    # Use motion-model residuals to estimate Q, then inspect uncertainty coverage at several scales.
     errs = []
 
     for U, X in logs:
@@ -832,6 +849,7 @@ def estimate_process_noise(logs):
 
 #the mean bearing error is a bias to subtract, the spread gives Rn.
 def calibrate_camera(n=N_CAMERA_POSES, seed = CAMERA_SEED):
+    # Compare PnP range/bearing against known simulated poses to estimate scale, bias and spread.
     rng = np.random.default_rng(seed)
     Z, H = [], []
     tries = 0

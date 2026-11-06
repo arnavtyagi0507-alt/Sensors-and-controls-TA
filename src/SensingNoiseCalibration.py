@@ -27,7 +27,7 @@ def wrap_angle(angle: float) -> float:
 
 @dataclass
 class NoiseConfig:
-    """1-sigma sensor noise values; units are radians, metres and pixels."""
+    """Configurable noise assumptions (not measurements unless calibrated from data)."""
     encoder_sigma_rad: float = 0.002
     lidar_sigma_m: float = 0.01
     camera_range_sigma_m: float = 0.015
@@ -72,7 +72,7 @@ class SensorProcessor:
         self.rng = np.random.default_rng(seed)
 
     def encoder_angle(self, raw_angle: float, add_noise=True) -> float:
-        """Noisy wheel angle in radians. Use consistently for both wheels."""
+        """Apply configured per-reading bias/noise to one wheel angle."""
         value = float(raw_angle)
         if add_noise:
             value += self.config.encoder_bias_rad_per_sample
@@ -80,7 +80,7 @@ class SensorProcessor:
         return value
 
     def lidar_scan(self, raw_ranges: Sequence[float], add_noise=True) -> np.ndarray:
-        """Return a cleaned LiDAR scan; non-hits remain -1, invalid values become -1."""
+        """Clean ranges and perturb valid hits; preserve -1 as the no-return sentinel."""
         ranges = np.asarray(raw_ranges, dtype=float).copy()
         ranges[~np.isfinite(ranges)] = -1.0
         ranges[ranges <= 0.0] = -1.0
@@ -132,6 +132,7 @@ class SensorProcessor:
 def camera_intrinsics_from_fov(width_px: int, height_px: int, fov_y_deg: float):
     """Pinhole camera matrix K and zero-distortion starting estimate.
 
+    This is a nominal simulation model, not an observed calibration.
     Use a calibration target and cv2.calibrateCamera for real camera calibration.
     In simulation this provides nominal intrinsics from the MuJoCo camera FOV.
     """
@@ -149,7 +150,8 @@ def camera_intrinsics_from_fov(width_px: int, height_px: int, fov_y_deg: float):
 def estimate_noise_sigma(residuals: Sequence[float], remove_bias=True) -> dict:
     """Estimate bias, sample standard deviation and RMSE from calibration residuals.
 
-    Residuals should be measured minus reference/calibration values. Use repeated
+    Residuals should be measured minus reference/calibration values; these statistics
+    only become empirical calibration when supplied with real/reference data. Use repeated
     stationary readings or known reference distances; do not invent noise values.
     """
     x = np.asarray(residuals, dtype=float)
@@ -223,7 +225,8 @@ def world_to_base(point_world, pose_world_base):
 def camera_to_base(point_camera_xyz, camera_origin_base_xy, camera_yaw_rad=0.0):
     """Convert a camera-frame 3D point to base-frame xy using a planar extrinsic.
 
-    This helper assumes camera point coordinates are expressed as:
+    This helper encodes the camera-to-robot frame convention; verify the mount axes.
+    It assumes camera point coordinates are expressed as:
       camera +z = forward, +x = right (OpenCV convention).
     It maps camera forward depth to base +x and camera-right to base -y,
     then applies the camera yaw and planar origin offset. Verify axes and yaw
@@ -240,7 +243,7 @@ def camera_to_base(point_camera_xyz, camera_origin_base_xy, camera_yaw_rad=0.0):
 
 
 def pose_error_metrics(estimated_poses, true_poses):
-    """Evaluation-only metrics; never use these values as controller inputs."""
+    """Evaluation-only metrics; compare estimate to truth after running the controller."""
     est = np.asarray(estimated_poses, dtype=float)
     truth = np.asarray(true_poses, dtype=float)
     if est.shape != truth.shape or est.ndim != 2 or est.shape[1] != 3:

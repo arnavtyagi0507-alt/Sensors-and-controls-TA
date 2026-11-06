@@ -1,4 +1,4 @@
-"""Reproducible trial seeds, disturbances and condition summaries for Track A."""
+"""Reproducible-trial helpers; a simulation must apply Disturbance for these to affect it."""
 from dataclasses import dataclass
 import numpy as np
 
@@ -17,6 +17,7 @@ class Disturbance:
     start_heading_offset_rad: float = 0.0
 
     def validate(self):
+        # Fail early on physically invalid scales or probabilities.
         for p in (self.camera_dropout_probability, self.lidar_dropout_probability):
             if not 0.0 <= p <= 1.0:
                 raise ValueError("Dropout probabilities must be in [0, 1]")
@@ -25,7 +26,7 @@ class Disturbance:
 
 
 def make_trial_seeds(n_trials=20, base_seed=41014):
-    """Fixed seed list so results are reproducible and comparable."""
+    """Return a deterministic seed per trial for repeatable condition comparisons."""
     if n_trials < 1:
         raise ValueError("n_trials must be >= 1")
     return [int(base_seed + i) for i in range(n_trials)]
@@ -38,6 +39,7 @@ def compare_conditions(condition_results):
     the evaluation metrics returned by sensing pose_error_metrics(), plus
     optional 'success' and 'collisions' fields.
     """
+    # Summaries compare supplied run metrics; this helper does not execute simulations.
     rows = []
     for condition, trials in condition_results.items():
         if not trials:

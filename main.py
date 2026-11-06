@@ -1,4 +1,9 @@
-"""Run the integrated Track A simulation and repeated robustness trials."""
+"""Draft runner for a Track A simulation API.
+
+The current trackA_demo.py is a separate demo interface and does not expose
+the run arguments/results expected below. Run trackA_demo.py directly unless
+the runner and simulation API have first been brought into agreement.
+"""
 
 import argparse
 
@@ -7,10 +12,13 @@ import numpy as np
 
 from src.SensingNoiseCalibration import NoiseConfig
 from src.robustness import Disturbance, compare_conditions, make_trial_seeds
+# This import currently expects T and a trial-aware run() that the present
+# trackA_demo.py does not provide; it documents the intended integration seam.
 from trackA_demo import MARKER_XY, OBSTACLES, T, run
 
 
 def main(argv=None):
+    # These options are for a future runner that can select display and trial conditions.
     parser = argparse.ArgumentParser(description="Track A sensing, estimation and control demo")
     parser.add_argument("--seed", type=int, default=41014, help="base seed for reproducible trials")
     parser.add_argument("--headless", action="store_true", help="run without viewer or plots")
@@ -21,6 +29,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.robustness:
+        # Reuse identical seeds so differences are attributable to disturbance settings.
         seeds = make_trial_seeds(args.trials, args.seed)
         conditions = {
             "baseline": Disturbance(),
@@ -40,6 +49,7 @@ def main(argv=None):
         for name, disturbance in conditions.items():
             condition_results[name] = []
             for trial_seed in seeds:
+                # This call requires run() to accept and apply the noise/disturbance settings.
                 result = run(
                     live=False,
                     seed=trial_seed,
@@ -55,6 +65,7 @@ def main(argv=None):
             print(row)
         return
 
+    # Intended single-trial path; metrics compare estimated pose with truth only after the run.
     result = run(
         live=not args.headless,
         seed=args.seed,
