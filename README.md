@@ -11,7 +11,7 @@
 ## Team and contributions
 
 - **Arnav Tyagi:** Platform modelling and estimation.
-- **Nivedha Suresh Balan:** Controller design and implementation.
+- **Nivedha Suresh Balan:** Controller design, implementation, disturbed trial
 - **Christian Puga:** Sensing, calibration, noise handling, frame management,
   integration and robustness.
 
