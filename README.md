@@ -8,13 +8,6 @@
 
 **Video Link:** 
 
-> **Implementation status:** The standalone `trackA_demo.py` has been run
-> successfully and demonstrates navigation and docking. It currently estimates
-> pose by wheel odometry; it does not fuse camera measurements with an EKF.
-> `main.py`, `trackA.py`, and the sensing/robustness helpers are not yet a single
-> integrated, clean-start pipeline. See [Known limitations](#known-limitations)
-> before treating this repository as the final assessed submission.
-
 ## Team and contributions
 
 - **Arnav Tyagi:** Platform modelling and estimation.
@@ -199,6 +192,14 @@ video and this description when the integrated estimator is ready.
 [Project GitHub repository](https://github.com/arnavtyagi0507-alt/Sensors-and-controls-TA)
 
 ## Known limitations and next integration work
+
+> **Implementation status:** The standalone `trackA_demo.py` has been run
+> successfully and demonstrates navigation and docking. It currently estimates
+> pose by wheel odometry; it does not fuse camera measurements with an EKF.
+> `main.py`, `trackA.py`, and the sensing/robustness helpers are not yet a single
+> integrated, clean-start pipeline. See [Known limitations](#known-limitations)
+> before treating this repository as the final assessed submission.
+
 
 1. Connect the sensing/noise processor to the demo's sensor readers without
    applying noise twice.
