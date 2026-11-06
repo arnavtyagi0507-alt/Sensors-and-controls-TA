@@ -180,12 +180,7 @@ fresh clone. `python main.py` is not currently a supported run command.
 
 ## Demo video
 
-**Five-minute project demonstration:** _Add the public video link here._
-
-The video should show successful task completion, at least one varied or
-disturbed trial, and the estimate with its uncertainty beside ground truth.
-The current standalone demo does not display EKF uncertainty, so update the
-video and this description when the integrated estimator is ready.
+**Five-minute project demonstration:** [_Add the public video link here._](https://youtu.be/eyBObxGzX3Q)
 
 ## Repository
 
