@@ -1,4 +1,4 @@
-# 41014 Integrated Project — Track A: Visual Waypoint Navigation
+41014 Integrated Project — Track A: Visual Waypoint Navigation
 
 **Project group:** 18
 
@@ -30,94 +30,77 @@ The intended pipeline is:
 
 ## Platform model
 
-The planar robot state is
-\[
-x = [p_x,\ p_y,\ \theta]^T,
-\]
-where \(p_x,p_y\) are world-frame position and \(\theta\) is heading. For wheel
-radius \(r\), wheel separation \(b\), and left/right wheel rates
-\(\dot\phi_L,\dot\phi_R\), the differential-drive model is
-\[
-v = \frac{r}{2}(\dot\phi_R+\dot\phi_L), \qquad
-\omega = \frac{r}{b}(\dot\phi_R-\dot\phi_L),
-\]
-\[
-\dot p_x=v\cos\theta,\qquad
-\dot p_y=v\sin\theta,\qquad
-\dot\theta=\omega.
-\]
+- **State:** position and heading `[x, y, θ]`. **Input:** forward speed `v` and turn rate `ω`.
+- **Wheels → motion:** the average of the two wheel speeds gives `v`; their difference divided by the wheel gap (0.16 m) gives `ω`. Wheel radius 0.033 m, time step 0.05 s.
+- **Motion model:** discrete unicycle using the exact arc each step (straight-line form when not turning). The robot can drive forward and turn but cannot slide sideways. The analytic Jacobian matches a numerical one to 1.3 × 10⁻¹⁰.
+- **Measurement model:** range and bearing to the marker from the camera, which sits 0.07 m in front of the robot centre.
+- **Linearisation:** about driving straight at 0.15 m/s (sympy), plus a two-state lateral/heading error model discretised with zero-order hold. The LQR is designed on this.
 
-The runnable demo uses nominal \(r=0.033\) m, \(b=0.160\) m, and a 0.05 s
-control period. These are simulation parameters, not claims of hardware
-calibration.
+**Controllability:** controllable at every tested speed above zero, but not when stopped, a stopped unicycle can't correct a sideways error, so the robot lines up at the pre-dock point before slowing.
 
-`trackA.py` contains separate local state-space, controllability and
-observability analysis code. Near straight motion at speed \(v_0\), its
-linearised unicycle model uses state \([p_x,p_y,\theta]\), with
-\[
-A=\begin{bmatrix}0&0&0\\0&0&v_0\\0&0&0\end{bmatrix},\qquad
-B=\begin{bmatrix}1&0\\0&0\\0&1\end{bmatrix}.
-\]
-The file also contains a reduced lateral/heading tracking model. These analysis
-sections are separate prototypes; confirm their outputs and assumptions against
-the final integrated code before presenting them as end-to-end results.
+**Observability:**
 
-## Sensors, calibration and frames
+| Sensors | Moving | Stopped |
+|---|---|---|
+| Wheels only | not observable | not observable |
+| Range only | sideways position hidden | not observable |
+| **Range + bearing** | **fully observable** | one hidden direction |
 
-### Sensor configuration in the standalone demo
+Range and bearing only pin down the pose while the robot is moving, which is why the camera is fused with odometry in an EKF rather than used on its own.
 
-- **Wheel encoders:** synthetic Gaussian noise with standard deviation
-  0.002 rad per reading.
-- **LiDAR:** 72 beams around the robot; synthetic Gaussian noise with standard
-  deviation 0.01 m on valid returns. A value of `-1` means no return.
-- **Camera:** detects ArUco marker corners and uses PnP with the known marker
-  size to estimate relative range and bearing.
-- **Camera intrinsics:** calculated from the simulated 640 × 480 image and 60°
-  vertical field of view. This is a nominal simulation model, not a physical
-  camera calibration.
 
-### Coordinate-frame convention
+![Modelling results](modelling_results.png)
+### Sensor configuration and calibration
 
-```text
-World/map: x-y plane; heading theta is counter-clockwise from world +x
-Robot base: +x forward, +y left
-OpenCV camera: +x right, +y down, +z forward
-Camera bearing: positive means the marker is left of the robot
-```
+- **Wheel encoders:** Gaussian noise, standard deviation 0.002 rad per reading.
+- **LiDAR:** 72 beams around the robot, noise 0.01 m on valid returns. A beam with no return is set to 3.5 m.
+- **Camera:** detects the ArUco marker and uses PnP with the known 0.20 m marker size to get range and bearing. Readings beyond 3 m are rejected. Intrinsics come from the simulated 640 × 480 image and 60° vertical field of view.
 
-The PnP result is converted to range using camera \(x,z\), with bearing
-\(\operatorname{atan2}(-x_c,z_c)\). Re-check this sign and the camera extrinsics
-if the camera mount or MuJoCo model changes.
+**Calibration**
 
-`src/SensingNoiseCalibration.py` provides reusable noise configuration,
-measurement validation, nominal intrinsics, calibration-residual statistics,
-frame-transform helpers and evaluation metrics. Its default parameters are
-assumptions until estimated from calibration data. **This processor is not
-currently connected to the standalone demo's sensor readers.**
+- **Wheel radius:** straight drive for 20 s. Odometry reported 2.567 m against 2.522 m true → calibrated radius **0.03242 m**.
+- **Process noise Q:** one-step motion-model error over 10 test drives, scaled ×3 so the uncertainty bound covers ≥ 95% of the error (0.98).
+- **Camera noise R:** PnP compared with 600 known poses. After removing a range scale (0.9863) and bearing bias (+0.065°), the leftover noise is **1.56 cm range, 0.028° bearing**. Range noise grows with distance; bearing noise doesn't.
 
-## Estimation and control in the runnable demo
+![Qd calibration](calibration_qd.png)
+![Camera calibration](calibration_camera.png)
 
-The current `trackA_demo.py` updates the pose using wheel-encoder odometry
-(dead reckoning). It does **not** maintain an EKF covariance or fuse camera
-range/bearing into the pose estimate. The marker measurement is instead used
-directly by the docking controller.
+## Estimation and control
 
-The controller has two modes:
+### Estimation (EKF)
 
-- **Navigate:** choose a LiDAR-clear direction near the waypoint direction,
-  reducing speed when obstacles are close.
-- **Dock:** use camera range to set forward speed and camera bearing to steer.
-  If the marker is not visible, turn toward its mapped direction; stop forward
-  motion when an obstacle is very close ahead.
+The robot starts up to 15 cm and 10° away from its planned pose and is never told. An **Extended Kalman Filter** estimates its pose every 0.05 s:
 
-`trackA.py` includes separate EKF/LQR and modelling prototypes, but they are not
-integrated into the standalone demo loop. The project brief requires a
-Kalman filter/EKF or observer and control on the estimated state. Do not claim
-this requirement is demonstrated by the standalone demo until an integrated
-version is implemented and tested.
+- **Predict (always):** move the estimate using the wheel speeds and the motion model. Uncertainty grows.
+- **Correct (marker seen within 3 m):** compare the camera's range and bearing with what the model expects, and nudge the estimate towards it. Uncertainty shrinks. The bearing difference is wrapped to ±180°.
+- **Marker not visible:** predict only, and the uncertainty keeps growing until the next sighting.
 
-Ground truth is used in the demo for post-run pose-error plots and collision
-logging. It is not passed into the controller.
+**Results (average of 20 runs):**
+
+| Setting | Position error | 2σ coverage |
+|---|---|---|
+| Wheels only (dead reckoning) | 4.5 cm | – |
+| **EKF (calibrated Q, R)** | **0.6 cm** | **1.00** |
+| R 10× too small | 2.3 cm | 0.79 (overconfident) |
+| Q 100× too small | 4.8 cm | 0.73 (overconfident) |
+
+The EKF cuts the error about 7×, and the true position stays inside its uncertainty bound.
+
+
+![True path, dead reckoning and EKF](<estimation_paths.png/>
+)
+
+### Control
+
+The controller uses the **EKF estimate**, not ground truth.
+
+- **Navigate:** head for the pre-dock point (1.54, 0), choosing the LiDAR-clear direction closest to the goal and slowing down when obstacles are close.
+- **Dock** (within 0.25 m of pre-dock): an LQR on the lateral/heading error model holds the centre line, slowing as the range approaches 0.40 m. Gains come from Bryson's rule (5 cm, 10°), limited to ±1.2 rad/s turn rate.
+- **Stop:** range within 3 cm of 0.40 m and marker centred.
+
+**Integrated run (seed 1):** marker first seen at 11 s; docked at **30.4 s** with **0.7 cm** final estimate error and −0.2 cm lateral offset.
+
+Ground truth is used only for post-run error plots. It is not passed to the estimator or controller.
 
 ## Integration and robustness
 
@@ -209,5 +192,5 @@ fresh clone. `python main.py` is not currently a supported run command.
 
 
 ## Generative AI declaration
-CHATGPT | Mainly used for debugging the code, in the unicycle model. Also used to verify the models made in mujoco and refine.
+CHATGPT | Mainly used for debugging the code, in the unicycle model. Also used to verify the models made in mujoco and refine, assistance for the project page.
    
