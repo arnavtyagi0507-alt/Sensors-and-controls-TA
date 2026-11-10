@@ -24,6 +24,8 @@ N_LIDAR = 72                               # LiDAR beams (one every 5 deg)
 CAM_W, CAM_H, CAM_FOVY = 640, 480, 60.0
 
 
+
+
 ap = argparse.ArgumentParser()
 ap.add_argument("--seed", type=int, default=None) # --seed makes random noise sequences repeatable
 ap.add_argument("--headless", action="store_true") #headless skips the live viewers and runs sim in the background
@@ -151,58 +153,7 @@ def read_marker():
     return result
  
  
-# --- EKF example: state is [world x, world y, heading], input is [v, omega] ---
-def wrap(a):
-    return (a + np.pi) % (2 * np.pi) - np.pi
- 
- 
-def f_uni(x, u):
-    v, w = u
-    th = x[2] + w * T / 2
-    return np.array([x[0] + v * T * np.cos(th), x[1] + v * T * np.sin(th), wrap(x[2] + w * T)])
- 
- 
-def F_uni(x, u):
-    v, w = u
-    th = x[2] + w * T / 2
-    return np.array([[1, 0, -v * T * np.sin(th)], [0, 1, v * T * np.cos(th)], [0, 0, 1]])
- 
- 
-CAM_OFFSET = 0.07                       # camera is 7 cm in front of the robot centre
-MARKER_FACE = MARKER_XY - [0.005, 0]
- 
- 
-def h_rb(x):
-    # Predict marker range and bearing, including the camera's forward offset.
-    dx = MARKER_FACE[0] - (x[0] + CAM_OFFSET * np.cos(x[2]))
-    dy = MARKER_FACE[1] - (x[1] + CAM_OFFSET * np.sin(x[2]))
-    return np.array([np.hypot(dx, dy), wrap(np.arctan2(dy, dx) - x[2])])
- 
- 
-def H_rb(x):
-    return np.array([(h_rb(x + d) - h_rb(x - d)) / 2e-6 for d in 1e-6 * np.eye(3)]).T
- 
- 
-process_noise = np.diag([0.001 ** 2, 0.001 ** 2, np.radians(0.3) ** 2])   # wheel slip per sample
-meas_noise = np.diag([0.05 ** 2, np.radians(0.5) ** 2])                # camera: 5 cm range, 0.5 deg bearing
- 
- 
-def ekf_step(xh, P, u, z):
-    # Predict pose/covariance from wheel motion, then correct only when a marker is observed.
-    F = F_uni(xh, u)
-    xh = f_uni(xh, u)
-    P = F @ P @ F.T + process_noise
-    # correct with the camera (only when the marker is seen)
-    if z is not None:
-        H = H_rb(xh)
-        nu = z - h_rb(xh)
-        nu[1] = wrap(nu[1])
-        S = H @ P @ H.T + meas_noise
-        K = P @ H.T @ np.linalg.inv(S)
-        xh = xh + K @ nu
-        xh[2] = wrap(xh[2])
-        P = (np.eye(3) - K @ H) @ P
-    return xh, P
+
  
  
 # --- LQR example: steer lateral and heading errors; LiDAR filters unsafe headings ---
@@ -314,26 +265,10 @@ def run(live=True):
         viewer.close(); plt.ioff(); plt.close(fig)
     return np.array(log_est), np.array(log_true)
  
- 
-if __name__ == "__main__":
-    print(f"seed {SEED}  (repeat with --seed {SEED})")
-    est, true = run(live=not ARGS.headless)
-    err = np.linalg.norm(est[:, :2] - true[:, :2], axis=1)
-    print(f"final position error {err[-1]*100:.1f} cm, mean {err.mean()*100:.1f} cm; "
-          f"dock offset {true[-1, 1]*100:+.1f} cm")
-    fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-    ax[0].plot(true[:, 0], true[:, 1], "k-", label="true path")
-    ax[0].plot(est[:, 0], est[:, 1], "b--", label="EKF estimate")
-    for o in OBSTACLES:
-        ax[0].add_patch(plt.Circle(o, 0.18, color="r", alpha=.5))
-    ax[0].plot(*MARKER_XY, "gs", ms=10, label="marker")
-    ax[0].set_xlim(-2.5, 2.5); ax[0].set_ylim(-2.5, 2.5); ax[0].set_aspect("equal"); ax[0].legend(); ax[0].grid()
-    ax[1].plot(np.arange(len(err)) * T, err * 100)
-    ax[1].set_xlabel("time (s)"); ax[1].set_ylabel("EKF position error (cm)"); ax[1].grid()
-    plt.tight_layout(); plt.show()
 
 
-# --- Separate model-analysis section: wheel kinematics and a straight-line linearisation ---
+#modelling
+# Separate model-analysis section: wheel kinematics and a straight-line linearisation 
 T = 0.05
 WHEEL_R = 0.033
 WHEEL_SEP = 0.16
@@ -496,14 +431,14 @@ def main():
     fig.savefig("modelling_results.png", dpi=130)
 
 
-if __name__ == "__main__":
-    main()
+modelling_main = main          # runs after the live robot (line 622)
 
 
 
 
 
-#Separate calibration/EKF study
+
+#estimation 
 WHEEL_R_CAL = 0.03242
 RANGE_SCALE = 0.9863
 QD = np.diag([0.000118 ** 2, 0.000082 ** 2, np.deg2rad(0.0812) ** 2])
@@ -664,10 +599,28 @@ def main(num_runs=20):
     plt.tight_layout(); plt.savefig("estimation_paths.png", dpi=130)
 
 
+estimation_main = main         # runs after the live robot (line 623)
+
+
+    
 if __name__ == "__main__":
-    main()
-
-
+    print(f"seed {SEED}  (repeat with --seed {SEED})")
+    est, true = run(live=not ARGS.headless)
+    err = np.linalg.norm(est[:, :2] - true[:, :2], axis=1)
+    print(f"final position error {err[-1]*100:.1f} cm, mean {err.mean()*100:.1f} cm; "
+          f"dock offset {true[-1, 1]*100:+.1f} cm")
+    fig, ax = plt.subplots(1, 2, figsize=(12, 5))
+    ax[0].plot(true[:, 0], true[:, 1], "k-", label="true path")
+    ax[0].plot(est[:, 0], est[:, 1], "b--", label="EKF estimate")
+    for o in OBSTACLES:
+        ax[0].add_patch(plt.Circle(o, 0.18, color="r", alpha=.5))
+    ax[0].plot(*MARKER_XY, "gs", ms=10, label="marker")
+    ax[0].set_xlim(-2.5, 2.5); ax[0].set_ylim(-2.5, 2.5); ax[0].set_aspect("equal"); ax[0].legend(); ax[0].grid()
+    ax[1].plot(np.arange(len(err)) * T, err * 100)
+    ax[1].set_xlabel("time (s)"); ax[1].set_ylabel("EKF position error (cm)"); ax[1].grid()
+    plt.tight_layout(); plt.show()
+    modelling_main()
+    estimation_main()
 
 # --- Calibration experiment: independently build a scene and collect sensor references ---
 CAM_W = 640
