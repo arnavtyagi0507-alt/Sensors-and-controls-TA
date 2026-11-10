@@ -206,3 +206,8 @@ fresh clone. `python main.py` is not currently a supported run command.
    clone.
 5. Add the coordinate-frame diagram, verified model-analysis results,
    repeated-trial quantitative results, failure analysis and public video link.
+
+
+## Generative AI declaration
+CHATGPT | Mainly used for debugging the code, in the unicycle model. Also used to verify the models made in mujoco and refine.
+   
