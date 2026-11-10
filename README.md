@@ -62,8 +62,7 @@ Range and bearing only pin down the pose while the robot is moving, which is why
 - **Process noise Q:** one-step motion-model error over 10 test drives, scaled ×3 so the uncertainty bound covers ≥ 95% of the error (0.98).
 - **Camera noise R:** PnP compared with 600 known poses. After removing a range scale (0.9863) and bearing bias (+0.065°), the leftover noise is **1.56 cm range, 0.028° bearing**. Range noise grows with distance; bearing noise doesn't.
 
-![Qd calibration](calibration_qd.png)
-![Camera calibration](calibration_camera.png)
+
 
 ## Estimation and control
 
@@ -87,8 +86,7 @@ The robot starts up to 15 cm and 10° away from its planned pose and is never to
 The EKF cuts the error about 7×, and the true position stays inside its uncertainty bound.
 
 
-![True path, dead reckoning and EKF](<estimation_paths.png/>
-)
+
 
 ### Control
 
@@ -160,7 +158,7 @@ mjpython trackA.py --headless --seed 41014
 
 ## Demo video
 
-**Five-minute project demonstration:** [_Add the public video link here._](https://youtu.be/eyBObxGzX3Q)
+**Five-minute project demonstration:** [_Link._](https://youtu.be/eyBObxGzX3Q)
 
 ## Repository
 
