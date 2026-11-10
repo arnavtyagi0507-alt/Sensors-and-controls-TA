@@ -144,22 +144,19 @@ Run the standalone demo:
 
 ```bash
 # macOS: use MuJoCo's Python launcher for the interactive viewer
-mjpython trackA_demo.py --seed 41014
+mjpython trackA.py --seed 41014
 
 # Other platforms
-python trackA_demo.py --seed 41014
+python trackA.py --seed 41014
 ```
 
 The demo saves its result plot as `trackA_result.png`. To run without the live
 viewer:
 
 ```bash
-mjpython trackA_demo.py --headless --seed 41014
+mjpython trackA.py --headless --seed 41014
 ```
 
-**Clean-clone check still required:** `trackA_demo.py` must be committed to this
-repository, then the install and run commands above should be tested from a
-fresh clone. `python main.py` is not currently a supported run command.
 
 ## Demo video
 
