@@ -169,26 +169,6 @@ fresh clone. `python main.py` is not currently a supported run command.
 
 [Project GitHub repository](https://github.com/arnavtyagi0507-alt/Sensors-and-controls-TA)
 
-## Known limitations and next integration work
-
-> **Implementation status:** The standalone `trackA_demo.py` has been run
-> successfully and demonstrates navigation and docking. It currently estimates
-> pose by wheel odometry; it does not fuse camera measurements with an EKF.
-> `main.py`, `trackA.py`, and the sensing/robustness helpers are not yet a single
-> integrated, clean-start pipeline. See [Known limitations](#known-limitations)
-> before treating this repository as the final assessed submission.
-
-
-1. Connect the sensing/noise processor to the demo's sensor readers without
-   applying noise twice.
-2. Integrate the EKF with encoder motion and camera range/bearing measurements;
-   ensure the controller uses the estimated state.
-3. Connect the robustness disturbances and repeated-trial summaries to the
-   actual simulation loop.
-4. Reconcile `main.py` with the actual simulation API, then test from a clean
-   clone.
-5. Add the coordinate-frame diagram, verified model-analysis results,
-   repeated-trial quantitative results, failure analysis and public video link.
 
 
 ## Generative AI declaration
