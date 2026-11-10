@@ -431,7 +431,7 @@ def main():
     fig.savefig("modelling_results.png", dpi=130)
 
 
-modelling_main = main          # runs after the live robot (line 622)
+modelling_main = main          # runs after the live robot 
 
 
 
@@ -599,7 +599,7 @@ def main(num_runs=20):
     plt.tight_layout(); plt.savefig("estimation_paths.png", dpi=130)
 
 
-estimation_main = main         # runs after the live robot (line 623)
+estimation_main = main         # runs after the live robot 
 
 
     
