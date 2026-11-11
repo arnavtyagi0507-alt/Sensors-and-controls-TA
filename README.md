@@ -6,7 +6,7 @@
 
 **Task:** Navigate around obstacles and visually dock at an ArUco-marked station.
 
-**Video Link:** 
+**Video Link:** https://youtu.be/eyBObxGzX3Q
 
 ## Team and contributions
 
