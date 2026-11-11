@@ -19,9 +19,17 @@ MARKER_SIZE = 0.20
 DOCK_DIST = 0.40                           # distance stopped from marker (m)
 PRE_DOCK = np.array([1.54, 0.0])           
 START_POSE = np.array([-1.5, -0.5, np.radians(30)])
-T = 0.05                                   #EKF sample time (s)
+                                 #EKF sample time (s)
 N_LIDAR = 72                               # LiDAR beams (one every 5 deg)
-CAM_W, CAM_H, CAM_FOVY = 640, 480, 60.0
+CAM_W = 640
+CAM_H = 480
+CAM_FOVY = 60 
+T = 0.05 #one time step that is 0.05 seconds
+WHEEL_R = 0.033 #wheel radius in meters
+WHEEL_SEP = 0.16 # gap between the wheels in meters
+CAM_OFFSET = 0.07 # camera offset from the robot center in meters 
+MARKER = np.array([2.435,0.0]) #marker face position in the world frame in meters
+
 
 
 
@@ -269,22 +277,24 @@ def run(live=True):
 
 #modelling
 # Separate model-analysis section: wheel kinematics and a straight-line linearisation 
-T = 0.05
-WHEEL_R = 0.033
-WHEEL_SEP = 0.16
-CAM_OFFSET = 0.07
-MARKER = np.array([2.435,0.0])
+T = 0.05 #one time step that is 0.05 seconds
+WHEEL_R = 0.033 #wheel radius in meters
+WHEEL_SEP = 0.16 # gap between the wheels in meters
+CAM_OFFSET = 0.07 # camera offset from the robot center in meters 
+MARKER = np.array([2.435,0.0]) #marker face position in the world frame in meters
 
 def wrap(a): # keeping the angles between -pi and pi 
     return(a + np.pi) % (2 * np.pi) - np.pi
 
 
+#gets the input of how many radians each wheel has turned and then calcualtes the distance rolled
 def encoders_to_u(dphi_l, dphi_r, r=WHEEL_R, b = WHEEL_SEP, dt = T): #Forward speed is the average of the two wheels; turn rate is their
     d_l = r * dphi_l
     d_r = r * dphi_r
     # difference divided by the wheel separation.
     return np.array([(d_r + d_l) / 2 / dt, (d_r - d_l) / b / dt]) 
 
+#unpacks where i am (x,y) and which way the robot is facing (theta) and then calculates where the robot will be after a time step T given the input u
 def f_uni(xh, u):
     v, w = u
     x, y, th = xh
@@ -293,19 +303,22 @@ def f_uni(xh, u):
     th_n = th + w * T
     return np.array([x + v / w * (np.sin(th_n) - np.sin(th)), y - v / w * (np.cos(th_n) - np.cos(th)), wrap(th_n)])
 
+#find where the camera, 7 cm forward from the centre in the direction the robot faces and then predicts range and bearing to the marker 
 def h_rb(xh, mk = MARKER):
     cx = xh[0] + CAM_OFFSET * np.cos(xh[2])
     cy = xh[1] + CAM_OFFSET * np.sin(xh[2])
-    dx,dy = mk[0] - cx, mk[1] - cy
+    dx,dy = mk[0] - cx, mk[1] - cy #straight line arrow from camera to the marker 
     return np.array([np.sqrt(dx**2 + dy**2), wrap(np.arctan2(dy, dx) - xh[2])])
 
+#how sensitive the next state is to the current state, given the input u. This is the Jacobian of f_uni with respect to xh
 def F_uni(xh, u):
     v, w = u
     th = xh[2]
     F = np.eye(3)
     if abs(w) < 1e-6:
+        #only f[0,2] and f[1,2] are non zeros to convert a heading error into an x or y error 
         F[0,2] = -v * T * np.sin(th)
-        F[1,2] = v * T * np.cos(th)
+        F[1,2] = v * T * np.cos(th) 
     else:
         th_n = th + w * T
         F[0,2] = v / w * (np.cos(th_n) - np.cos(th))
@@ -314,10 +327,11 @@ def F_uni(xh, u):
 
 
 
-
+#range only camera model used to show range alone 
 def h_range(xh, mk = MARKER):
     return h_rb(xh, mk)[:1]
 
+#numerical jacobian each output + - eps and see how much the output changes. This is used to check the analytic Jacobians of f_uni and h_rb
 def num_jac(fn, x, eps = 1e-6):
     x = np.asarray(x,float)
     f0 = np.atleast_1d(fn(x))
@@ -333,17 +347,12 @@ def H_rb(xh, mk = MARKER):
 def H_range(xh, mk = MARKER):
     return num_jac(lambda s: h_range(s, mk), xh)
 
-# Linearise at forward speed v0; the input matrix describes acceleration/turning authority.
+#linearised unicycle at forward speed v0 driving straight
 def unicycle_lin(v0):
     Au = np.array([[0.0,0,0],[0,0,v0],[0,0,0]])
     Bu = np.array([[1.0,0],[0,0],[0,1.0]]) # sideways error while the robot is moving.
     return Au, Bu
 
-def pbh_stabilisable(A,B, tol = 1e-8):
-    # PBH test: unstable modes must be reachable through the inputs.
-    n = A.shape[0]
-    return all(np.linalg.matrix_rank(np.hstack([A - lam * np.eye(n), B]), tol) == n
-               for lam in np.linalg.eigvals(A) if lam.real >= -tol)
 
 
 #letting sympy take the Jacobians of the continuous model
@@ -431,7 +440,7 @@ def main():
     fig.savefig("modelling_results.png", dpi=130)
 
 
-modelling_main = main          # runs after the live robot 
+#modelling_main = main       
 
 
 
@@ -449,6 +458,7 @@ P_start = np.diag([0.1 ** 2, 0.1 ** 2, np.deg2rad(7) ** 2])
 
 
 
+#correct step, where the camera compares with the expected reading and then nudge estimate by K
 def ekf_correction(xh_pred, P_pred, y, h, H_jac, Rn, residual=None):
     # Kalman gain balances predicted uncertainty against measurement uncertainty.
     y_hat = h(xh_pred)                       # nonlinear h gives the expected measurement
@@ -457,9 +467,11 @@ def ekf_correction(xh_pred, P_pred, y, h, H_jac, Rn, residual=None):
     K = P_pred @ H.T @ np.linalg.inv(S)      # Kalman gain
     nu = (y - y_hat) if residual is None else residual(y, y_hat)
     xh = xh_pred + K @ nu
-    P = (np.eye(len(xh_pred)) - K @ H) @ P_pred
+    P = (np.eye(len(xh_pred)) - K @ H) @ P_pred #p shrinks after seeing the marker 
     return xh, P, nu, S
 
+
+#one full EKF Step: predict the next state, then correct with the camera if available
 def ekf_step(xh, P, u, z, Qd=QD, Rn=RN, calibrated=True):
     # Apply wheel/range/bearing calibration, predict, then optionally correct from camera.
     u = np.asarray(u, float)
@@ -476,7 +488,8 @@ def ekf_step(xh, P, u, z, Qd=QD, Rn=RN, calibrated=True):
         xh[2] = wrap(xh[2])
     return xh, P
 
-
+#predicts the next step, and when moving with wheels the P increases because the uncertainty grows. 
+#The next step is predicted by the nonlinear f function, and the uncertainty is propagated by the Jacobian F.
 def ekf_prediction(xh, P, u, f, F_jac, Qd):
     xh_pred = f(xh, u)                       # nonlinear f propagates the state
     F = F_jac(xh, u)                         
@@ -485,7 +498,6 @@ def ekf_prediction(xh, P, u, f, F_jac, Qd):
 
 def range_bearing_residual(y, y_hat):
     return np.array([y[0] - y_hat[0], wrap(y[1] - y_hat[1])])
-
 
 
 
@@ -536,6 +548,7 @@ def simulate(seed=1, max_range=CAM_MAX_RANGE, Qd_filter=None, Rn_filter=None, us
             "P": np.array(PP), "seen": np.array(SEEN)}
 
 
+#score = rmse, final error, 2 sigma coverage
 def score(out):
     # Position RMSE/final error measure accuracy; coverage checks whether uncertainty is realistic.
     e = np.linalg.norm(out["true"][:, :2] - out["xh"][:, :2], axis=1)
@@ -550,7 +563,7 @@ def mean_over_seeds(num_runs=20, **kw):
 
 def main(num_runs=20):
 
-    print(" Dead reckoning vs EKF ")
+    print(" Dead reckoning vs EKF ===")
     print(f"{'':16s} {'RMSE [m]':>9s} {'final [m]':>10s} {'2-sigma coverage':>17s}")
     dr = [simulate(seed=sd) for sd in range(num_runs)]
     e_dr = [np.linalg.norm(o["true"][:, :2] - o["dr"][:, :2], axis=1) for o in dr]
@@ -599,7 +612,7 @@ def main(num_runs=20):
     plt.tight_layout(); plt.savefig("estimation_paths.png", dpi=130)
 
 
-estimation_main = main         # runs after the live robot 
+#estimation_main = main         # runs after the live robot 
 
 
     
@@ -619,13 +632,10 @@ if __name__ == "__main__":
     ax[1].plot(np.arange(len(err)) * T, err * 100)
     ax[1].set_xlabel("time (s)"); ax[1].set_ylabel("EKF position error (cm)"); ax[1].grid()
     plt.tight_layout(); plt.show()
-    modelling_main()
-    estimation_main()
 
-# --- Calibration experiment: independently build a scene and collect sensor references ---
-CAM_W = 640
-CAM_H = 480
-CAM_FOVY = 60
+
+# Calibration experiment: independently build a scene and collect sensor references 
+
 MARKER_X = 2.44
 MARKER_SIZE = 0.2
 ENC_NOISE = 0.002
@@ -734,7 +744,7 @@ def set_robot_pose(x,y,th,settle=350):
 
 
 
-
+#raw wheel angles without the noise 
 def encoders():
     return np.array([data.sensor("el").data[0], data.sensor("er").data[0]])
 
@@ -746,6 +756,7 @@ def drive_step(v,w):
         mujoco.mj_step(model, data)
 
 
+# camera reads, then aruco then solves Pnp then range and bearing.
 def read_camera():
     renderer.update_scene(data, camera = 'cam')
     gray = cv2.cvtColor(renderer.render(), cv2.COLOR_RGB2GRAY)
@@ -765,6 +776,7 @@ def read_camera():
     return np.array([r, b])
 
 
+#ground truth only used as the tape measure to compare the EKF against 
 def get_true_pose():
     R = data.body("robot").xmat.reshape(3,3)
     return np.array([*data.body("robot").xpos[:2], np.arctan2(R[1,0], R[0,0])])
@@ -879,7 +891,7 @@ def drive_logs(radius_est, seed = DRIVE_SEED, seconds = DRIVE_TIME):
 def print_results(radius_est, true_distance, d_reported, Qd0, coverage_table, s_pick, sd,
                   scale, e_r_std, e_b_std, e_b_mean, tries, bands):
     text = f"""
- Results
+=== Results ===
 Part 1: reported {d_reported:.4f} m, true {true_distance:.4f} m
 Part 2: one-step model error sd: x {np.sqrt(Qd0[0, 0]) * 1000:.3f} mm, y {np.sqrt(Qd0[1, 1]) * 1000:.3f} mm, heading {np.degrees(np.sqrt(Qd0[2, 2])):.4f} deg
         Qd scale vs 2-sigma coverage of dead-reckoning error (target {COVERAGE_TARGET}):
