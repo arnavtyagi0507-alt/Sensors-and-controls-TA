@@ -550,7 +550,7 @@ def mean_over_seeds(num_runs=20, **kw):
 
 def main(num_runs=20):
 
-    print("=== Dead reckoning vs EKF ===")
+    print(" Dead reckoning vs EKF ")
     print(f"{'':16s} {'RMSE [m]':>9s} {'final [m]':>10s} {'2-sigma coverage':>17s}")
     dr = [simulate(seed=sd) for sd in range(num_runs)]
     e_dr = [np.linalg.norm(o["true"][:, :2] - o["dr"][:, :2], axis=1) for o in dr]
@@ -879,7 +879,7 @@ def drive_logs(radius_est, seed = DRIVE_SEED, seconds = DRIVE_TIME):
 def print_results(radius_est, true_distance, d_reported, Qd0, coverage_table, s_pick, sd,
                   scale, e_r_std, e_b_std, e_b_mean, tries, bands):
     text = f"""
-=== Results ===
+ Results
 Part 1: reported {d_reported:.4f} m, true {true_distance:.4f} m
 Part 2: one-step model error sd: x {np.sqrt(Qd0[0, 0]) * 1000:.3f} mm, y {np.sqrt(Qd0[1, 1]) * 1000:.3f} mm, heading {np.degrees(np.sqrt(Qd0[2, 2])):.4f} deg
         Qd scale vs 2-sigma coverage of dead-reckoning error (target {COVERAGE_TARGET}):
