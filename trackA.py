@@ -19,8 +19,8 @@ MARKER_SIZE = 0.20
 DOCK_DIST = 0.40                           # distance stopped from marker (m)
 PRE_DOCK = np.array([1.54, 0.0])           
 START_POSE = np.array([-1.5, -0.5, np.radians(30)])
-                                 #EKF sample time (s)
-N_LIDAR = 72                               # LiDAR beams (one every 5 deg)
+                                
+N_LIDAR = 72                               
 CAM_W = 640
 CAM_H = 480
 CAM_FOVY = 60 
